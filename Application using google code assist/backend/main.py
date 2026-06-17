@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from openai import OpenAI, OpenAIError
 from dotenv import load_dotenv
+from langsmith import traceable, wrappers
 
 # Load environment variables from .env file
 load_dotenv()
@@ -81,11 +82,24 @@ async def read_root():
     return {"message": "AI Support Ticket Router API is running."}
 
 # --- OpenAI Client for Hugging Face Router ---
-client = OpenAI(
+openai_client = OpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=os.getenv("HUGGING_FACE_API_KEY"),
 )
 
+# Wrap with LangSmith tracing
+client = wrappers.wrap_openai(
+    openai_client,
+    tracing_extra={
+        "tags": ["openai", "hugging-face-router", "python"],
+        "metadata": {
+            "integration": "openai",
+            "model": "meta-llama/Llama-3.1-8B-Instruct",
+        },
+    },
+)
+
+@traceable(name="query_hf_router", run_type="tool")
 def query_hf_router(model: str, prompt: str, max_tokens: int = 150):
     """Helper function to query the Hugging Face Router using the OpenAI client."""
     api_key = os.getenv("HUGGING_FACE_API_KEY")
@@ -181,6 +195,7 @@ def get_email_prompt(ticket: str, analysis: dict, guidance: str) -> str:
 # --- API Endpoints ---
 
 @app.post("/api/judge-relevance", response_model=RelevanceJudgeResponse)
+@traceable(name="judge_relevance", run_type="chain")
 async def judge_relevance(ticket_request: TicketRequest):
     """Validates if the ticket is relevant to the support system."""
     ticket = ticket_request.ticket
@@ -211,6 +226,7 @@ async def judge_relevance(ticket_request: TicketRequest):
         )
 
 @app.post("/api/analyze", response_model=TicketAnalysis)
+@traceable(name="analyze_ticket", run_type="chain")
 async def analyze_ticket(ticket_request: TicketRequest):
     """Receives a ticket, performs analysis, and returns the analysis."""
     ticket = ticket_request.ticket
@@ -233,6 +249,7 @@ async def analyze_ticket(ticket_request: TicketRequest):
         raise HTTPException(status_code=500, detail="AI failed to generate a valid analysis.")
 
 @app.post("/api/guidance")
+@traceable(name="get_guidance", run_type="chain")
 async def get_guidance(guidance_request: GuidanceRequest):
     """Receives a ticket and its analysis, and returns generated guidance."""
     ticket = guidance_request.ticket
@@ -254,6 +271,7 @@ class EmailRequest(BaseModel):
     guidance: str
 
 @app.post("/api/email")
+@traceable(name="get_email", run_type="chain")
 async def get_email(email_request: EmailRequest):
     """Receives ticket, analysis, and guidance, and returns a final email."""
     ticket = email_request.ticket
@@ -369,6 +387,7 @@ Provide your evaluation in JSON format:
 IMPORTANT: Return ONLY valid JSON, no additional text."""
 
 @app.post("/api/judge-analysis", response_model=AnalysisJudgeResponse)
+@traceable(name="judge_analysis", run_type="chain")
 async def judge_analysis(analysis_judge_request: AnalysisJudgeRequest):
     """Validates the ticket analysis before proceeding to guidance generation."""
     ticket = analysis_judge_request.ticket
@@ -400,6 +419,7 @@ async def judge_analysis(analysis_judge_request: AnalysisJudgeRequest):
         )
 
 @app.post("/api/judge", response_model=JudgeResponse)
+@traceable(name="judge_response", run_type="chain")
 async def judge_response(judge_request: JudgeRequest):
     """LLM Judge evaluates the quality of the ticket response."""
     ticket = judge_request.ticket
